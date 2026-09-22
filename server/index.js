@@ -142,6 +142,16 @@ app.use(refererFallback);
 
 app.use((_req, res) => res.status(404).type('text/plain').send('Not found.'));
 
+// Last line of defence for a synchronous throw anywhere in the stack.
+app.use((err, _req, res, _next) => {
+  console.error('[fun-hub] request failed:', err && err.message);
+  if (res.headersSent) {
+    res.destroy();
+    return;
+  }
+  res.status(500).type('text/plain').send('Something went wrong handling that request.');
+});
+
 setInterval(sweepSessions, 30 * 60 * 1000).unref();
 
 export const server = http.createServer(app);
@@ -151,8 +161,22 @@ if (process.env.NODE_ENV !== 'test') {
   // The devcontainer already starts the server on attach, so running
   // `npm start` by hand is a normal thing to do and shouldn't dump a stack
   // trace on someone who just wants to know what happened.
+  // A browser proxy talks to the whole internet, so it meets malformed
+  // responses and half-closed sockets as a matter of course. Logging and
+  // carrying on is the right trade here: the alternative is the tab you are
+  // reading going dead because some other tab's tracker misbehaved.
+  process.on('uncaughtException', (err) => {
+    console.error('[fun-hub] uncaught exception (server still running):', err && err.stack);
+  });
+  process.on('unhandledRejection', (err) => {
+    console.error('[fun-hub] unhandled rejection (server still running):', err);
+  });
+
   server.on('error', (err) => {
-    if (err.code !== 'EADDRINUSE') throw err;
+    if (err.code !== 'EADDRINUSE') {
+      console.error('[fun-hub] server error:', err && err.message);
+      process.exit(1);
+    }
     console.error(
       `\n  Port ${PORT} is already in use — Fun-hub is most likely already running.\n` +
         `\n  To open it:      Ports tab → click the globe icon on port ${PORT}` +

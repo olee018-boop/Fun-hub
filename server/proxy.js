@@ -1,6 +1,7 @@
 // The proxy endpoint: fetch the target, sanitise headers, rewrite the body.
 
 import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import iconv from 'iconv-lite';
 import { cookieHeader, storeCookies, scriptVisibleCookies } from './cookies.js';
 import { rewriteCss, rewriteHtml, rewriteLocation } from './rewrite.js';
@@ -98,7 +99,24 @@ function getSetCookies(response) {
   return raw ? [raw] : [];
 }
 
+/**
+ * Entry point. Everything below can fail on a hostile or simply unlucky
+ * response, and a browser proxy must never die because one page misbehaved.
+ */
 export async function handleProxy(req, res) {
+  try {
+    await proxyRequest(req, res);
+  } catch (err) {
+    if (res.headersSent || res.writableEnded) {
+      res.destroy();
+      return;
+    }
+    const target = targetFromPath(req.originalUrl);
+    res.status(502).type('text/html').send(errorPage(target ? target.href : req.originalUrl, err.message));
+  }
+}
+
+async function proxyRequest(req, res) {
   const target = targetFromPath(req.originalUrl);
   if (!target) {
     res.status(400).type('text/plain').send('Bad proxy URL.');
@@ -140,7 +158,11 @@ export async function handleProxy(req, res) {
   // Copy through everything that isn't dangerous.
   for (const [name, value] of upstream.headers) {
     if (STRIP_RESPONSE.has(name.toLowerCase())) continue;
-    res.setHeader(name, value);
+    try {
+      res.setHeader(name, value);
+    } catch {
+      /* a header Node refuses to send on: dropping it beats failing the page */
+    }
   }
   res.setHeader('x-px-url', encodeURI(target.href));
 
@@ -149,14 +171,15 @@ export async function handleProxy(req, res) {
 
   const location = upstream.headers.get('location');
   if (location && upstream.status >= 300 && upstream.status < 400) {
-    res.status(upstream.status).setHeader('location', rewriteLocation(location, target.href));
+    res.status(upstream.status);
+    res.setHeader('location', rewriteLocation(location, target.href));
     res.end();
     return;
   }
 
   const contentType = upstream.headers.get('content-type') || '';
   const kind = contentKind(contentType);
-  res.status(upstream.status);
+  res.status(upstream.status >= 100 && upstream.status <= 599 ? upstream.status : 502);
 
   if (!upstream.body) {
     res.end();
@@ -164,8 +187,16 @@ export async function handleProxy(req, res) {
   }
 
   // Binary and script responses stream straight through untouched.
+  //
+  // pipeline(), not pipe(): navigating away mid-download aborts this stream,
+  // and pipe() leaves that 'error' event unhandled, which takes the whole
+  // process down. Routine browsing does this constantly.
   if (kind === 'other') {
-    Readable.fromWeb(upstream.body).pipe(res);
+    try {
+      await pipeline(Readable.fromWeb(upstream.body), res);
+    } catch {
+      if (!res.writableEnded) res.end();
+    }
     return;
   }
 

@@ -210,8 +210,10 @@ test/          unit and end-to-end tests
 npm test
 ```
 
-44 tests: URL resolution, HTML/CSS rewriting, the cookie jar, the private
+47 tests: URL resolution, HTML/CSS rewriting, the cookie jar, the private
 address guard, and end-to-end runs of the real server against a fixture origin
 (rewriting, redirects, cookie replay, POST bodies, charset transcoding, gzip,
 range requests, `content-length` handling, WebSocket relaying, SSE streaming,
-header stripping and the referer fallback).
+header stripping and the referer fallback), plus resilience tests that run the
+server as a child process and check it survives aborted downloads and origins
+that hang up mid-response.
