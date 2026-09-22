@@ -17,6 +17,14 @@ server and rewritten so it renders inside the app.
 If the preview doesn't pop up on its own, open the **Ports** panel, find port
 3000 and open its forwarded URL.
 
+**"Port 3000 is already in use"** just means it is already running — the
+container starts it for you on attach, so you don't need to. Open it from the
+**Ports** panel. After pulling new code, restart it with:
+
+```bash
+npm run restart
+```
+
 ## Run it locally
 
 ```bash
@@ -28,8 +36,8 @@ npm start
 
 Then open <http://localhost:3000>.
 
-`npm run dev` restarts the server when you edit a file. `npm test` runs the
-suite.
+`npm run dev` restarts the server when you edit a file, `npm run restart` stops
+whatever is already on the port and starts fresh, and `npm test` runs the suite.
 
 ## What it does
 

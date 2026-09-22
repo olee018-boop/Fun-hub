@@ -148,6 +148,20 @@ export const server = http.createServer(app);
 attachWebSocketProxy(server);
 
 if (process.env.NODE_ENV !== 'test') {
+  // The devcontainer already starts the server on attach, so running
+  // `npm start` by hand is a normal thing to do and shouldn't dump a stack
+  // trace on someone who just wants to know what happened.
+  server.on('error', (err) => {
+    if (err.code !== 'EADDRINUSE') throw err;
+    console.error(
+      `\n  Port ${PORT} is already in use — Fun-hub is most likely already running.\n` +
+        `\n  To open it:      Ports tab → click the globe icon on port ${PORT}` +
+        `\n  To restart it:   npm run restart` +
+        `\n  To run a second: PORT=3001 npm start\n`
+    );
+    process.exit(1);
+  });
+
   server.listen(PORT, HOST, () => {
     console.log(`\n  Fun-hub Browser is running\n  → http://localhost:${PORT}\n`);
     if (process.env.CODESPACE_NAME) {
