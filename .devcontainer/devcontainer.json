@@ -1,0 +1,27 @@
+{
+  "name": "Fun-hub Browser",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm",
+  "postCreateCommand": "npm install",
+  "postAttachCommand": {
+    "server": "npm start"
+  },
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": {
+      "label": "Fun-hub Browser",
+      "onAutoForward": "openPreview",
+      "protocol": "http"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["dbaeumer.vscode-eslint"],
+      "settings": {
+        "editor.formatOnSave": false
+      }
+    }
+  },
+  "remoteEnv": {
+    "PORT": "3000"
+  }
+}

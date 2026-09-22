@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fun-hub Browser</title>
+<link rel="stylesheet" href="/__px/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌐</text></svg>">
+</head>
+<body>
+
+<div id="tabstrip" class="tabstrip">
+  <div id="tabs" class="tabs"></div>
+  <button id="newtab" class="icon-btn newtab-btn" title="New tab (Ctrl+T)" aria-label="New tab">+</button>
+</div>
+
+<div class="toolbar">
+  <button id="back" class="icon-btn" title="Back (Alt+←)" aria-label="Back">
+    <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+  </button>
+  <button id="forward" class="icon-btn" title="Forward (Alt+→)" aria-label="Forward">
+    <svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
+  </button>
+  <button id="reload" class="icon-btn" title="Reload (Ctrl+R)" aria-label="Reload">
+    <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 10-2.3 5.7M20 5v6h-6"/></svg>
+  </button>
+  <button id="home" class="icon-btn" title="Home" aria-label="Home">
+    <svg viewBox="0 0 24 24"><path d="M4 11l8-7 8 7M6 10v9h12v-9"/></svg>
+  </button>
+
+  <div class="omnibox">
+    <span id="scheme" class="scheme" aria-hidden="true"></span>
+    <input id="address" type="text" spellcheck="false" autocomplete="off"
+           placeholder="Search the web or enter an address" aria-label="Address and search bar">
+    <button id="bookmark" class="icon-btn inline" title="Bookmark this page" aria-label="Bookmark this page">☆</button>
+  </div>
+
+  <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Settings">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>
+  </button>
+</div>
+
+<div id="bookmarks" class="bookmarks"></div>
+<div id="progress" class="progress"></div>
+
+<main id="viewport" class="viewport">
+  <section id="newtab-page" class="newtab-page">
+    <h1 class="logo">🌐 Fun-hub</h1>
+    <form id="newtab-form" class="newtab-form">
+      <input id="newtab-input" type="text" spellcheck="false" autocomplete="off"
+             placeholder="Search the web or enter an address" aria-label="Search">
+      <button type="submit">Go</button>
+    </form>
+    <div id="shortcuts" class="shortcuts"></div>
+    <p class="hint">Ctrl+T new tab · Ctrl+W close tab · Ctrl+L address bar · Alt+←/→ history</p>
+  </section>
+</main>
+
+<dialog id="settings" class="settings">
+  <h2>Settings</h2>
+  <label class="field">
+    <span>Search engine</span>
+    <select id="engine">
+      <option value="duckduckgo">DuckDuckGo</option>
+      <option value="duckduckgo-lite">DuckDuckGo Lite (fastest through a proxy)</option>
+      <option value="bing">Bing</option>
+      <option value="google">Google</option>
+      <option value="wikipedia">Wikipedia</option>
+    </select>
+  </label>
+  <label class="field checkbox">
+    <input id="restore" type="checkbox">
+    <span>Reopen my tabs when I come back</span>
+  </label>
+  <div class="settings-actions">
+    <button id="clear-data" class="danger">Clear cookies &amp; site data</button>
+    <button id="settings-close">Done</button>
+  </div>
+</dialog>
+
+<script src="/__px/app.js"></script>
+</body>
+</html>

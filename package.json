@@ -1,0 +1,21 @@
+{
+  "name": "fun-hub-browser",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A self-hosted web proxy with a full tabbed browser UI. Run it in a GitHub Codespace and browse the web.",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "express": "^4.19.2",
+    "iconv-lite": "^0.6.3"
+  }
+}
