@@ -3,6 +3,7 @@
 
 import http from 'node:http';
 import zlib from 'node:zlib';
+import { WebSocketServer } from 'ws';
 
 export function startOrigin() {
   const server = http.createServer((req, res) => {
@@ -70,6 +71,92 @@ export function startOrigin() {
       return;
     }
 
+    // A single-page app doing the thing that breaks naive proxies: building a
+    // URL against location.href and fetching it.
+    if (url.pathname === '/slow') {
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end('<html><head><title>Slow</title></head><body>done</body></html>');
+      }, 1500);
+      return;
+    }
+
+    if (url.pathname === '/wsdemo') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html><html><head><title>WS</title></head><body>
+<script>
+  window.__ws = {};
+  var s = new WebSocket('ws://' + location.host + '/socket');
+  s.onopen = function () { window.__ws.open = true; s.send('ping'); };
+  s.onmessage = function (e) {
+    window.__ws.messages = (window.__ws.messages || []).concat(e.data);
+  };
+  s.onerror = function () { window.__ws.error = true; };
+</script>
+</body></html>`);
+      return;
+    }
+
+    if (url.pathname === '/spa') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html><html><head><title>SPA</title></head><body>
+<div id="out">pending</div>
+<script>
+  window.__probe = {};
+  var built = new URL('/api/data', location.href);
+  window.__probe.builtHref = built.href;
+  window.__probe.builtHost = built.hostname;
+  fetch(built).then(function (r) { return r.json(); }).then(function (j) {
+    window.__probe.fetched = j.ok;
+    document.getElementById('out').textContent = 'loaded';
+  }).catch(function (e) { window.__probe.fetched = 'error: ' + e.message; });
+</script>
+</body></html>`);
+      return;
+    }
+
+    if (url.pathname === '/api/data') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, host: req.headers.host }));
+      return;
+    }
+
+    // Range support, as a media player would use.
+    if (url.pathname === '/media') {
+      const payload = Buffer.alloc(1000, 0x41);
+      const range = req.headers.range;
+      if (range) {
+        const m = /bytes=(\d+)-(\d*)/.exec(range);
+        const start = Number(m[1]);
+        const end = m[2] ? Number(m[2]) : payload.length - 1;
+        const slice = payload.subarray(start, end + 1);
+        res.writeHead(206, {
+          'content-type': 'video/mp4',
+          'content-range': `bytes ${start}-${end}/${payload.length}`,
+          'content-length': String(slice.length),
+          'accept-ranges': 'bytes',
+        });
+        res.end(slice);
+        return;
+      }
+      res.writeHead(200, {
+        'content-type': 'video/mp4',
+        'content-length': String(payload.length),
+        'accept-ranges': 'bytes',
+      });
+      res.end(payload);
+      return;
+    }
+
+    if (url.pathname === '/setcookie') {
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'set-cookie': ['visible=yes; Path=/', 'hidden=nope; Path=/; HttpOnly'],
+      });
+      res.end('<html><head><title>Cookies</title></head><body>ok</body></html>');
+      return;
+    }
+
     if (url.pathname === '/gzip') {
       const body = zlib.gzipSync(Buffer.from('<html><head><title>Gz</title></head><body><a href="/gzlink">g</a></body></html>'));
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-encoding': 'gzip' });
@@ -87,10 +174,17 @@ export function startOrigin() {
     res.end('nope');
   });
 
+  // Echo endpoint for the WebSocket relay tests.
+  const wss = new WebSocketServer({ server, path: '/socket' });
+  wss.on('connection', (socket, req) => {
+    socket.send(`hello:${req.headers.cookie || 'nocookie'}`);
+    socket.on('message', (data) => socket.send(`echo:${data}`));
+  });
+
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
       const { port } = server.address();
-      resolve({ server, port, origin: `http://127.0.0.1:${port}` });
+      resolve({ server, wss, port, origin: `http://127.0.0.1:${port}` });
     });
   });
 }

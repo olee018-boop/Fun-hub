@@ -5,9 +5,10 @@ process.env.PROXY_ALLOW_PRIVATE = '1'; // the fixture origin lives on 127.0.0.1
 
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { WebSocket } from 'ws';
 import { startOrigin } from './fixture-origin.js';
 
-const { default: app } = await import('../server/index.js');
+const { default: app, server: appServer } = await import('../server/index.js');
 
 let origin;
 let originServer;
@@ -19,9 +20,9 @@ before(async () => {
   origin = fixture.origin;
   originServer = fixture.server;
 
-  await new Promise((resolve) => {
-    proxyServer = app.listen(0, '127.0.0.1', resolve);
-  });
+  // The exported http server (not app.listen) so the WebSocket relay is live.
+  proxyServer = appServer;
+  await new Promise((resolve) => proxyServer.listen(0, '127.0.0.1', resolve));
   proxyBase = `http://127.0.0.1:${proxyServer.address().port}`;
 });
 
@@ -33,7 +34,7 @@ after(async () => {
 /** Fetch through the proxy, carrying the session cookie like a browser would. */
 function makeClient() {
   let sessionCookie = '';
-  return async function request(path, options = {}) {
+  const request = async function request(path, options = {}) {
     const headers = { ...(options.headers || {}) };
     if (sessionCookie) headers.cookie = sessionCookie;
     const res = await fetch(proxyBase + path, { redirect: 'manual', ...options, headers });
@@ -43,6 +44,8 @@ function makeClient() {
     }
     return res;
   };
+  Object.defineProperty(request, 'sessionCookie', { get: () => sessionCookie });
+  return request;
 }
 
 test('serves the browser shell at /', async () => {
@@ -191,4 +194,108 @@ test('rejects a malformed proxy URL', async () => {
   const res = await fetch(`${proxyBase}/p/`, { redirect: 'manual' });
   assert.equal(res.status, 400);
   assert.match(await res.text(), /Bad proxy URL/);
+});
+
+
+/* ------------------------------------------------- media, range, lengths */
+
+test('preserves content-length on streamed responses', async () => {
+  const res = await makeClient()(`/p/${origin}/media`);
+  assert.equal(res.headers.get('content-length'), '1000');
+  assert.equal(res.headers.get('accept-ranges'), 'bytes');
+  assert.equal((await res.arrayBuffer()).byteLength, 1000);
+});
+
+test('forwards Range requests and relays 206 responses', async () => {
+  const res = await makeClient()(`/p/${origin}/media`, { headers: { range: 'bytes=10-19' } });
+  assert.equal(res.status, 206, 'a media player needs the partial response');
+  assert.equal(res.headers.get('content-range'), 'bytes 10-19/1000');
+  assert.equal(res.headers.get('content-length'), '10');
+  assert.equal((await res.arrayBuffer()).byteLength, 10);
+});
+
+test('restates content-length after rewriting changes the body', async () => {
+  const res = await makeClient()(`/p/${origin}/deep/page`);
+  const body = await res.text();
+  assert.equal(Number(res.headers.get('content-length')), Buffer.byteLength(body));
+});
+
+/* ------------------------------------------------------------- cookies */
+
+test('only script-visible cookies are seeded into the page', async () => {
+  const request = makeClient();
+  await request(`/p/${origin}/setcookie`);
+  const html = await (await request(`/p/${origin}/deep/page`)).text();
+
+  const config = JSON.parse(html.match(/window\.__PX__=(\{.*?\});<\/script>/)[1]);
+  const names = config.cookies.map((c) => c.name);
+  assert.deepEqual(names, ['visible'], 'HttpOnly cookies must not be exposed to page scripts');
+});
+
+test('cookies set from page JavaScript reach the jar', async () => {
+  const request = makeClient();
+  await request(`/p/${origin}/`);
+  const stored = await request('/__px/cookie', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ url: `${origin}/`, cookie: 'fromjs=1; Path=/' }),
+  });
+  assert.equal(stored.status, 200);
+
+  const who = await (await request(`/p/${origin}/whoami`)).json();
+  assert.match(who.cookie, /fromjs=1/);
+});
+
+test('rejects a malformed cookie sync', async () => {
+  const res = await makeClient()('/__px/cookie', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ url: 'not a url', cookie: 'x=1' }),
+  });
+  assert.equal(res.status, 400);
+});
+
+/* ---------------------------------------------------------- websockets */
+
+function wsOnce(socket, event) {
+  return new Promise((resolve, reject) => {
+    socket.once(event, resolve);
+    socket.once('error', reject);
+  });
+}
+
+test('relays WebSocket connections to the target', async () => {
+  const wsBase = proxyBase.replace('http://', 'ws://');
+  const socket = new WebSocket(`${wsBase}/ws/${origin.replace('http://', 'ws://')}/socket`);
+  await wsOnce(socket, 'open');
+
+  const greeting = await wsOnce(socket, 'message');
+  assert.match(greeting.toString(), /^hello:/);
+
+  socket.send('ping');
+  const echoed = await wsOnce(socket, 'message');
+  assert.equal(echoed.toString(), 'echo:ping');
+
+  socket.close();
+});
+
+test('WebSocket relay carries the session cookie jar upstream', async () => {
+  const request = makeClient();
+  await request(`/p/${origin}/`); // the origin sets sid=abc123 on this session
+  assert.ok(request.sessionCookie, 'the client should be holding a session id');
+
+  const wsBase = proxyBase.replace('http://', 'ws://');
+  const socket = new WebSocket(`${wsBase}/ws/${origin.replace('http://', 'ws://')}/socket`, {
+    headers: { cookie: request.sessionCookie },
+  });
+  await wsOnce(socket, 'open');
+  const greeting = (await wsOnce(socket, 'message')).toString();
+  socket.close();
+  assert.match(greeting, /sid=abc123/, 'the jar must follow the socket, or logged-in sockets fail');
+});
+
+test('refuses to relay a WebSocket to a bad path', async () => {
+  const wsBase = proxyBase.replace('http://', 'ws://');
+  const socket = new WebSocket(`${wsBase}/not-a-relay`);
+  await assert.rejects(() => wsOnce(socket, 'open'));
 });

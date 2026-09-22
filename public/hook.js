@@ -9,6 +9,8 @@
   window.__PX_HOOK_INSTALLED__ = true;
 
   var PREFIX = '/p/';
+  var WS_PREFIX = '/ws/';
+  var NativeURL = window.URL;
   var cfg = window.__PX__ || {};
   var base = cfg.base || location.href;
   var OPAQUE = /^(data:|blob:|javascript:|mailto:|tel:|about:|#|sms:|magnet:|intent:)/i;
@@ -20,15 +22,49 @@
     return unproxy(location.href) || base;
   }
 
+  function decodeTarget(raw) {
+    return raw.replace(/^(https?:)\/{0,2}/i, function (_m, scheme) {
+      return scheme.toLowerCase() + '//';
+    });
+  }
+
+  function onOurOrigin(parsed) {
+    return parsed.host === location.host && /^(https?|wss?):$/.test(parsed.protocol);
+  }
+
+  /**
+   * The real absolute URL a value refers to, or null if it isn't ours to touch.
+   *
+   * The subtle case: a page that builds `location.host + '/api'` or reads
+   * `location.origin` produces a URL pointing at the *proxy*. Those are meant
+   * for the site the page thinks it is on, so send them there.
+   */
+  function resolveReal(u) {
+    var parsed;
+    try {
+      parsed = new NativeURL(String(u), location.href);
+    } catch (e) {
+      return null;
+    }
+
+    if (!onOurOrigin(parsed)) return parsed.href;
+    if (parsed.pathname.indexOf('/__px/') === 0) return null; // the shell's own endpoints
+    if (parsed.pathname.indexOf(PREFIX) === 0) {
+      return decodeTarget(parsed.pathname.slice(PREFIX.length) + parsed.search + parsed.hash);
+    }
+    try {
+      return new NativeURL(parsed.pathname + parsed.search + parsed.hash, realHref()).href;
+    } catch (e) {
+      return null;
+    }
+  }
+
   function unproxy(u) {
     try {
-      var parsed = new URL(u, location.href);
+      var parsed = new NativeURL(u, location.href);
       if (parsed.origin !== location.origin) return String(u);
       if (parsed.pathname.indexOf(PREFIX) !== 0) return null;
-      var raw = parsed.pathname.slice(PREFIX.length) + parsed.search + parsed.hash;
-      return raw.replace(/^(https?:)\/{0,2}/i, function (_m, s) {
-        return s.toLowerCase() + '//';
-      });
+      return decodeTarget(parsed.pathname.slice(PREFIX.length) + parsed.search + parsed.hash);
     } catch (e) {
       return null;
     }
@@ -38,14 +74,12 @@
     if (u == null) return u;
     var s = String(u);
     if (!s || OPAQUE.test(s)) return s;
-    try {
-      var abs = new URL(s, realHref());
-      if (abs.protocol !== 'http:' && abs.protocol !== 'https:') return s;
-      return PREFIX + abs.href;
-    } catch (e) {
-      return s;
-    }
+    var real = resolveReal(s);
+    if (!real) return s;
+    if (!/^https?:\/\//i.test(real)) return s; // ws:, ftp: and friends go elsewhere
+    return PREFIX + real;
   }
+
   window.__pxProxy = proxy;
   window.__pxUnproxy = unproxy;
 
@@ -59,6 +93,34 @@
     } catch (e) {
       /* parent went away */
     }
+  }
+
+  /* --------------------------------------------------------- URL resolution */
+
+  // Page code constantly does new URL('/api', location.href). Left alone that
+  // resolves against the proxy's own origin and loses the site entirely, so
+  // resolve against the real URL instead and hand back the real result — the
+  // patched fetch/XHR below put it back through the proxy when it is used.
+  function PxURL(url, base) {
+    var resolvedBase = base;
+    if (base !== undefined && base !== null) {
+      resolvedBase = unproxy(String(base)) || String(base);
+    } else if (typeof url === 'string' && !/^[a-z][a-z0-9+.-]*:/i.test(url)) {
+      resolvedBase = realHref(); // relative with no base: the document's real URL
+    }
+    var input = typeof url === 'string' ? unproxy(url) || url : url;
+    return resolvedBase === undefined || resolvedBase === null
+      ? new NativeURL(input)
+      : new NativeURL(input, resolvedBase);
+  }
+  // Sharing the prototype keeps `x instanceof URL` true for natively built
+  // URLs as well as ours; the prototype chain carries the statics.
+  PxURL.prototype = NativeURL.prototype;
+  Object.setPrototypeOf(PxURL, NativeURL);
+  try {
+    window.URL = PxURL;
+  } catch (e) {
+    /* locked down: keep the native one */
   }
 
   /* ------------------------------------------------------- network layer */
@@ -101,6 +163,32 @@
     window.EventSource.prototype = NativeES.prototype;
   }
 
+  // WebSockets cannot reach the target directly from this origin, so route
+  // them through the server's relay at /ws/<absolute url>.
+  if (window.WebSocket) {
+    var NativeWS = window.WebSocket;
+    var PxWebSocket = function (url, protocols) {
+      var relayed = url;
+      var real = resolveReal(url);
+      if (real) {
+        var wsUrl = real.replace(/^http:/i, 'ws:').replace(/^https:/i, 'wss:');
+        if (/^wss?:\/\//i.test(wsUrl)) {
+          relayed =
+            (location.protocol === 'https:' ? 'wss://' : 'ws://') +
+            location.host + WS_PREFIX + wsUrl;
+        }
+      }
+      return protocols === undefined ? new NativeWS(relayed) : new NativeWS(relayed, protocols);
+    };
+    PxWebSocket.prototype = NativeWS.prototype;
+    Object.setPrototypeOf(PxWebSocket, NativeWS);
+    try {
+      window.WebSocket = PxWebSocket;
+    } catch (e) {
+      /* keep the native one */
+    }
+  }
+
   if (window.Worker) {
     var NativeWorker = window.Worker;
     window.Worker = function (url, options) {
@@ -116,6 +204,87 @@
       return new Promise(function () {});
     };
   }
+
+  /* --------------------------------------------------------------- cookies */
+
+  // Every proxied site shares this one browser origin, so raw document.cookie
+  // would let sites read and clobber each other's cookies. Namespace them per
+  // site, and mirror writes to the server jar so they ride along on requests.
+  (function patchCookies() {
+    var descriptor = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie');
+    if (!descriptor || !descriptor.get || !descriptor.set || !descriptor.configurable) return;
+
+    var siteOrigin;
+    try {
+      siteOrigin = new NativeURL(realHref()).origin;
+    } catch (e) {
+      return;
+    }
+
+    // Short stable tag per origin, so one site's cookies can't be read by another.
+    var hash = 5381;
+    for (var i = 0; i < siteOrigin.length; i++) hash = ((hash * 33) ^ siteOrigin.charCodeAt(i)) >>> 0;
+    var tag = '__px' + hash.toString(36) + '_';
+
+    Object.defineProperty(document, 'cookie', {
+      configurable: true,
+      get: function () {
+        var raw = descriptor.get.call(document) || '';
+        return raw
+          .split(';')
+          .map(function (part) { return part.trim(); })
+          .filter(function (part) { return part.indexOf(tag) === 0; })
+          .map(function (part) { return part.slice(tag.length); })
+          .join('; ');
+      },
+      set: function (value) {
+        var text = String(value);
+        var eq = text.indexOf('=');
+        var semi = text.indexOf(';');
+        if (eq === -1 || (semi !== -1 && semi < eq)) return;
+
+        var attrs = semi === -1 ? '' : text.slice(semi);
+        var name = text.slice(0, eq).trim();
+        var rest = semi === -1 ? text.slice(eq + 1) : text.slice(eq + 1, semi);
+
+        // Domain and Path refer to the real site, not to us: drop Domain and
+        // pin Path to / so the cookie behaves the same across that site.
+        var kept = attrs
+          .split(';')
+          .filter(function (a) {
+            var key = a.split('=')[0].trim().toLowerCase();
+            return key && key !== 'domain' && key !== 'path' && key !== 'secure';
+          })
+          .join(';');
+
+        descriptor.set.call(document, tag + name + '=' + rest + ';Path=/' + (kept ? ';' + kept : ''));
+
+        // Deliberately the native fetch: the patched one would resolve this
+        // against the target site and post the cookie to them instead of us.
+        try {
+          if (!nativeFetch) return;
+          nativeFetch.call(window, '/__px/cookie', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ url: realHref(), cookie: name + '=' + rest + attrs }),
+            keepalive: true,
+          }).catch(function () {});
+        } catch (e) {
+          /* best effort */
+        }
+      },
+    });
+
+    // Seed whatever the server already holds for this site.
+    var seeds = cfg.cookies || [];
+    for (var j = 0; j < seeds.length; j++) {
+      try {
+        descriptor.set.call(document, tag + seeds[j].name + '=' + seeds[j].value + ';Path=/');
+      } catch (e) {
+        /* skip a bad one */
+      }
+    }
+  })();
 
   /* ----------------------------------------------------------- DOM layer */
 
@@ -190,6 +359,7 @@
   // land here eventually.
   function fixNode(node) {
     if (!node || node.nodeType !== 1) return;
+    if (node.hasAttribute && node.hasAttribute('data-px-hook')) return;
     for (var attr in URL_ATTRS) {
       if (!node.hasAttribute || !node.hasAttribute(attr)) continue;
       var value = node.getAttribute(attr);
@@ -284,7 +454,7 @@
       var actionReal = actionAttr ? unproxy(proxy(actionAttr)) : realHref();
       if (!actionReal) return;
       event.preventDefault();
-      var dest = new URL(actionReal, realHref());
+      var dest = new NativeURL(actionReal, realHref());
       dest.search = new URLSearchParams(new FormData(form)).toString();
       dest.hash = '';
       location.href = proxy(dest.href);

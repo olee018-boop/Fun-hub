@@ -16,6 +16,7 @@
     address: $('address'), scheme: $('scheme'), bookmark: $('bookmark'),
     progress: $('progress'), bookmarks: $('bookmarks'),
     newtabPage: $('newtab-page'), newtabForm: $('newtab-form'), newtabInput: $('newtab-input'),
+    loading: $('loading'), loadingHost: $('loading-host'),
     shortcuts: $('shortcuts'), settings: $('settings'), settingsBtn: $('settings-btn'),
     settingsClose: $('settings-close'), engine: $('engine'), restore: $('restore'),
     clearData: $('clear-data'),
@@ -118,6 +119,7 @@
     var i = tabs.findIndex(function (t) { return t.id === id; });
     if (i === -1) return;
     var tab = tabs[i];
+    clearTimeout(tab.loadTimer);
     if (tab.frame) tab.frame.remove();
     tabs.splice(i, 1);
 
@@ -150,7 +152,10 @@
       'sandbox',
       'allow-same-origin allow-scripts allow-forms allow-popups allow-modals allow-downloads allow-presentation'
     );
-    frame.setAttribute('allow', 'fullscreen; clipboard-write');
+    frame.setAttribute(
+      'allow',
+      'fullscreen; autoplay; encrypted-media; picture-in-picture; clipboard-write; accelerometer; gyroscope'
+    );
     frame.dataset.tabId = String(tab.id);
     frame.hidden = tab.id !== activeId;
     frame.addEventListener('load', function () { onFrameLoad(tab); });
@@ -160,8 +165,13 @@
   }
 
   function onFrameLoad(tab) {
-    tab.loading = false;
     var real = currentFrameUrl(tab);
+    // A freshly appended iframe fires load for about:blank before the real
+    // navigation even starts. Acting on that would clear the loading state
+    // immediately and the spinner would never be seen.
+    if (!real && tab.url) return;
+
+    setLoading(tab, false);
     if (real && real !== tab.url) recordVisit(tab, real);
     // The hook reports the real title; this is the fallback for pages where it
     // could not run (plain images, downloads, error pages).
@@ -181,6 +191,21 @@
       return fromProxy(tab.frame.contentWindow.location.href);
     } catch (e) {
       return fromProxy(tab.frame.getAttribute('src') || '');
+    }
+  }
+
+  var LOAD_TIMEOUT_MS = 30000;
+
+  /** Flip a tab's loading state, guarding against a load event that never comes. */
+  function setLoading(tab, value) {
+    tab.loading = value;
+    clearTimeout(tab.loadTimer);
+    if (value) {
+      tab.loadTimer = setTimeout(function () {
+        tab.loading = false;
+        renderTabs();
+        if (tab.id === activeId) syncChrome();
+      }, LOAD_TIMEOUT_MS);
     }
   }
 
@@ -208,7 +233,7 @@
   function loadIntoFrame(tab, url) {
     tab.url = url;
     tab.title = 'Loading…';
-    tab.loading = true;
+    setLoading(tab, true);
     var frame = frameFor(tab);
     var proxied = toProxy(url);
 
@@ -255,7 +280,7 @@
   function reload() {
     var tab = activeTab();
     if (!tab || !tab.url) return;
-    tab.loading = true;
+    setLoading(tab, true);
     renderTabs();
     try {
       tab.frame.contentWindow.location.reload();
@@ -333,7 +358,10 @@
     els.bookmark.classList.toggle('saved', isBookmarked(url));
     els.bookmark.disabled = !url;
 
-    els.progress.classList.toggle('active', !!(tab && tab.loading));
+    var busy = !!(tab && tab.loading && tab.url);
+    els.progress.classList.toggle('active', busy);
+    els.loading.classList.toggle('visible', busy);
+    if (busy) els.loadingHost.textContent = hostOf(tab.url) || tab.url;
     els.newtabPage.classList.toggle('visible', !url);
     document.title = tab && tab.title && url ? tab.title + ' — Fun-hub' : 'Fun-hub Browser';
   }
@@ -516,7 +544,7 @@
     if (!tab) return;
 
     if (data.type === 'px:location') {
-      tab.loading = false;
+      setLoading(tab, false);
       if (data.title) tab.title = data.title;
       recordVisit(tab, data.url);
       renderTabs();
@@ -524,7 +552,7 @@
     } else if (data.type === 'px:newtab' && data.url) {
       createTab(data.url ? resolveQuery(data.url) : '', { background: false });
     } else if (data.type === 'px:loading') {
-      tab.loading = true;
+      setLoading(tab, true);
       renderTabs();
       if (tab.id === activeId) syncChrome();
     } else if (data.type === 'px:shortcut') {

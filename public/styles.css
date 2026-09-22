@@ -255,6 +255,60 @@ body {
 }
 .viewport iframe[hidden] { display: none; }
 
+/* ------------------------------------------------------- loading animation */
+
+.loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: var(--bg);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .2s ease, visibility 0s linear .2s;
+}
+.loading-overlay.visible {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity .12s ease;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
+
+.loading-host {
+  font-size: 13px;
+  color: var(--muted);
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: .5; }
+  50%      { opacity: 1; }
+}
+
+/* Respect users who don't want motion: keep the state, drop the spinning. */
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; border-top-color: var(--accent); }
+  .loading-host { animation: none; opacity: .8; }
+  .progress.active { animation: none; background: var(--accent); }
+  .tab.loading .tab-favicon { animation: none; }
+}
+
 /* -------------------------------------------------------------- new tab UI */
 
 .newtab-page {

@@ -1,9 +1,11 @@
 import path from 'node:path';
+import http from 'node:http';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { handleProxy, refererFallback } from './proxy.js';
-import { clearJar, sweepSessions } from './cookies.js';
+import { clearJar, sweepSessions, storeCookies } from './cookies.js';
+import { attachWebSocketProxy } from './websocket.js';
 import { PREFIX, normalizeTarget, toProxy } from './url.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -80,6 +82,23 @@ app.post('/__px/clear-data', (req, res) => {
 app.get('/__px/health', (_req, res) => res.json({ ok: true, uptime: process.uptime() }));
 
 /**
+ * Cookies a page sets from JavaScript. The hook posts them here so they join
+ * the session jar and get replayed on later requests to that site.
+ */
+app.post('/__px/cookie', express.json({ limit: '64kb' }), (req, res) => {
+  const { url, cookie } = req.body || {};
+  if (typeof url !== 'string' || typeof cookie !== 'string' || !cookie) {
+    return res.status(400).json({ ok: false });
+  }
+  try {
+    storeCookies(req.pxSessionId, new URL(url), [cookie]);
+  } catch {
+    return res.status(400).json({ ok: false });
+  }
+  res.json({ ok: true });
+});
+
+/**
  * Turn whatever the user typed into a URL and bounce to it. Anything that
  * doesn't look like a hostname becomes a search.
  */
@@ -125,8 +144,11 @@ app.use((_req, res) => res.status(404).type('text/plain').send('Not found.'));
 
 setInterval(sweepSessions, 30 * 60 * 1000).unref();
 
+export const server = http.createServer(app);
+attachWebSocketProxy(server);
+
 if (process.env.NODE_ENV !== 'test') {
-  app.listen(PORT, HOST, () => {
+  server.listen(PORT, HOST, () => {
     console.log(`\n  Fun-hub Browser is running\n  → http://localhost:${PORT}\n`);
     if (process.env.CODESPACE_NAME) {
       const domain = process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN || 'app.github.dev';

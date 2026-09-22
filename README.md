@@ -42,6 +42,8 @@ suite.
 | **Bookmarks** | Star the current page; right-click a bookmark to remove it |
 | **Session restore** | Your tabs come back when you reload the app |
 | **Cookies** | Kept per session on the server, so sites keep you logged in |
+| **WebSockets** | Relayed through the server, so live features work |
+| **Loading UI** | Spinner, progress bar and a spinning tab favicon while a page loads |
 
 ### Keyboard shortcuts
 
@@ -83,24 +85,64 @@ up to the shell.
 
 **`server/cookies.js`** keeps a cookie jar per UI session, server-side. Site
 cookies are never handed to your real browser — that would mix every site's
-cookies into one origin and blow past the 4 KB limit.
+cookies into one origin and blow past the 4 KB limit. Cookies a page sets from
+JavaScript are namespaced per site and mirrored back to the jar, so one site
+can't read or clobber another's.
 
-## Limits
+**`server/websocket.js`** relays WebSocket connections. A page connecting to
+`wss://site/socket` is rewritten to `/ws/wss://site/socket` on our origin, and
+the server bridges the two, carrying the session's cookies upstream.
 
-Worth knowing before you file a bug:
+One subtlety worth knowing: a page that builds a URL from `location.host` or
+`new URL(path, location.href)` would get the *proxy's* address, losing the site
+entirely. The hook resolves those against the real URL instead, which is what
+makes most single-page apps work.
 
-- **WebSockets aren't proxied**, so live chat, collaborative editors and some
-  dashboards won't update.
-- **Google, and most big services, will fight this.** Bot detection, captchas
-  and hard-coded origin checks are common. DuckDuckGo Lite is the most reliable
-  search option.
-- **Service workers are disabled** inside proxied pages — they'd install against
-  the proxy's origin and intercept everything.
+## What works, and what doesn't
+
+This is a rewriting proxy. It fetches pages on the server and edits them so they
+render on a different origin than they were built for. That works well for a
+large part of the web and badly for a specific, predictable slice of it.
+
+**Works well** — documentation, wikis, news, blogs, forums, search engines,
+most static and server-rendered sites, and simple interactive apps.
+
+**Usually works** — single-page apps. Navigation, `fetch`/XHR, WebSockets and
+dynamically built DOM are all handled. Expect occasional rough edges.
+
+**Often fails** — sites with aggressive bot detection, anything requiring a
+login flow with strict origin checks, and Google properties.
+
+**Won't work** — large streaming services. **YouTube is the clearest example,
+and it is not a bug we can fix:**
+
+- **Playback uses Media Source Extensions** — the player fetches video segments
+  from `googlevideo.com` URLs signed against your session and IP. Relaying those
+  through a proxy invalidates them or throttles them to unusable speeds.
+- **Bot detection targets datacenter IPs.** A Codespace runs in Azure. YouTube
+  frequently answers those with "Sign in to confirm you're not a bot" before any
+  proxying question arises.
+- **Some content is DRM-protected** (Widevine/EME), which cannot work in a
+  rewritten, reframed page.
+- **Volume.** A single YouTube page-load is hundreds of requests, all funnelled
+  through one Node process.
+
+Netflix, Spotify, Twitch and similar are the same story. If you want video in a
+Codespace, a proxy is the wrong tool.
+
+### Remaining known gaps
+
 - **`window.location = 'https://other-site.com'` from a page's own script** can
-  escape the proxy; `location` can't be patched from JavaScript. Links, forms
-  and fetches are all covered.
-- **Video streaming** mostly won't work: DRM and range-heavy players don't
-  survive the round trip.
+  escape the proxy. `location` is unforgeable in JavaScript, so it cannot be
+  patched. Links, forms, `fetch`, XHR, WebSockets and URLs built from
+  `location.host` are all handled; direct assignment of a cross-origin absolute
+  URL is not.
+- **Service workers are disabled** inside proxied pages — they would install
+  against the proxy's origin and intercept everything.
+- **`localStorage` is shared** between all proxied sites, because they all run
+  on this one origin. Cookies are namespaced per site; `localStorage` is not.
+- **`<iframe srcdoc>` content** isn't rewritten.
+- **Captchas** mostly won't complete.
 
 ## Security
 
@@ -134,6 +176,7 @@ server/
   rewrite.js   HTML and CSS rewriting, hook injection
   url.js       /p/<url> encoding and reference resolution
   cookies.js   per-session server-side cookie jar
+  websocket.js WebSocket relay
   guard.js     private-address blocking
 public/
   index.html   the browser shell
@@ -149,7 +192,8 @@ test/          unit and end-to-end tests
 npm test
 ```
 
-33 tests: URL resolution, HTML/CSS rewriting, the cookie jar, the private
+42 tests: URL resolution, HTML/CSS rewriting, the cookie jar, the private
 address guard, and end-to-end runs of the real server against a fixture origin
-(rewriting, redirects, cookie replay, POST bodies, charset transcoding, header
-stripping and the referer fallback).
+(rewriting, redirects, cookie replay, POST bodies, charset transcoding, gzip,
+range requests, `content-length` handling, WebSocket relaying, header stripping
+and the referer fallback).

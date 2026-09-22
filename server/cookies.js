@@ -35,6 +35,7 @@ function parseSetCookie(line, requestUrl) {
     path: defaultPath(requestUrl.pathname),
     expires: null,
     secure: false,
+    httpOnly: false,
   };
 
   for (const attr of attrs) {
@@ -54,6 +55,8 @@ function parseSetCookie(line, requestUrl) {
       if (!Number.isNaN(secs)) cookie.expires = Date.now() + secs * 1000;
     } else if (key === 'secure') {
       cookie.secure = true;
+    } else if (key === 'httponly') {
+      cookie.httpOnly = true;
     }
   }
   return cookie;
@@ -118,6 +121,28 @@ export function cookieHeader(sid, requestUrl) {
   // Longer paths first, as the cookie spec requires.
   matches.sort((a, b) => b.path.length - a.path.length);
   return matches.map((c) => `${c.name}=${c.value}`).join('; ');
+}
+
+/**
+ * The cookies a page's own JavaScript is allowed to see, for seeding
+ * document.cookie inside the proxied page.
+ */
+export function scriptVisibleCookies(sid, requestUrl) {
+  if (!sid) return [];
+  const jar = jars.get(sid);
+  if (!jar || !jar.size) return [];
+
+  const now = Date.now();
+  const out = [];
+  for (const cookie of jar.values()) {
+    if (cookie.httpOnly) continue;
+    if (cookie.expires !== null && cookie.expires <= now) continue;
+    if (cookie.secure && requestUrl.protocol !== 'https:') continue;
+    if (!domainMatches(cookie, requestUrl.hostname)) continue;
+    if (!pathMatches(cookie.path, requestUrl.pathname)) continue;
+    out.push({ name: cookie.name, value: cookie.value });
+  }
+  return out;
 }
 
 /** Forget everything stored for a session ("clear browsing data"). */

@@ -35,8 +35,9 @@ export function rewriteCss(css, base) {
  * Rewrite an HTML document.
  * @param {string} html raw markup
  * @param {string} base the absolute URL the document was loaded from
+ * @param {{cookies?: Array<{name: string, value: string}>}} [options]
  */
-export function rewriteHtml(html, base) {
+export function rewriteHtml(html, base, options = {}) {
   const $ = cheerio.load(html, { decodeEntities: false });
 
   // A <base href> changes how every other reference resolves, so consume it
@@ -106,6 +107,7 @@ export function rewriteHtml(html, base) {
   const bootstrap = `<script data-px-hook>window.__PX__=${JSON.stringify({
     base: effectiveBase,
     documentUrl: base,
+    cookies: options.cookies || [],
   })};</script><script data-px-hook src="/__px/hook.js"></script>`;
 
   const head = $('head').first();

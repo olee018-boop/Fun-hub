@@ -2,7 +2,7 @@
 
 import { Readable } from 'node:stream';
 import iconv from 'iconv-lite';
-import { cookieHeader, storeCookies } from './cookies.js';
+import { cookieHeader, storeCookies, scriptVisibleCookies } from './cookies.js';
 import { rewriteCss, rewriteHtml, rewriteLocation } from './rewrite.js';
 import { targetFromPath, toProxy } from './url.js';
 import { assertPublicHost } from './guard.js';
@@ -16,10 +16,13 @@ const HOP_BY_HOP = new Set([
   'accept-encoding', 'origin', 'referer', 'if-none-match', 'if-modified-since',
 ]);
 
+// Media players depend on these surviving the round trip.
+const PASSTHROUGH_REQUEST = ['range', 'if-range'];
+
 // Headers that would either break framing or undo our rewriting.
 const STRIP_RESPONSE = new Set([
   'content-security-policy', 'content-security-policy-report-only', 'x-frame-options',
-  'strict-transport-security', 'content-encoding', 'content-length', 'set-cookie',
+  'strict-transport-security', 'content-encoding', 'set-cookie',
   'cross-origin-opener-policy', 'cross-origin-embedder-policy', 'cross-origin-resource-policy',
   'report-to', 'nel', 'permissions-policy', 'feature-policy', 'x-xss-protection',
   'clear-site-data', 'alt-svc', 'transfer-encoding', 'connection',
@@ -63,6 +66,9 @@ function buildRequestHeaders(req, target, sid) {
   }
   headers['user-agent'] = req.headers['user-agent'] || DEFAULT_UA;
   headers['accept-encoding'] = 'gzip, deflate, br';
+  for (const name of PASSTHROUGH_REQUEST) {
+    if (req.headers[name]) headers[name] = req.headers[name];
+  }
 
   // Rewrite Referer/Origin to the values the target expects to see.
   const referer = req.headers.referer;
@@ -138,6 +144,9 @@ export async function handleProxy(req, res) {
   }
   res.setHeader('x-px-url', encodeURI(target.href));
 
+  // undici already decompressed the body, so any upstream length is now a lie.
+  if (upstream.headers.get('content-encoding')) res.removeHeader('content-length');
+
   const location = upstream.headers.get('location');
   if (location && upstream.status >= 300 && upstream.status < 400) {
     res.status(upstream.status).setHeader('location', rewriteLocation(location, target.href));
@@ -169,6 +178,7 @@ export async function handleProxy(req, res) {
   }
 
   if (buffer.byteLength > MAX_REWRITE_BYTES) {
+    res.setHeader('content-length', String(buffer.byteLength));
     res.end(buffer); // too big to parse; better to serve it as-is
     return;
   }
@@ -177,14 +187,20 @@ export async function handleProxy(req, res) {
   const text = decode(buffer, charset);
   let output;
   try {
-    output = kind === 'html' ? rewriteHtml(text, target.href) : rewriteCss(text, target.href);
+    output =
+      kind === 'html'
+        ? rewriteHtml(text, target.href, { cookies: scriptVisibleCookies(sid, target) })
+        : rewriteCss(text, target.href);
   } catch (err) {
     output = text; // never fail the page over a rewriting bug
   }
 
-  // We always emit UTF-8 once we've decoded and re-serialised.
+  // We always emit UTF-8 once we've decoded and re-serialised, and the body
+  // changed length, so restate it rather than leaving a stale value behind.
+  const body = Buffer.from(output, 'utf8');
   res.setHeader('content-type', `${contentType.split(';')[0].trim() || 'text/html'}; charset=utf-8`);
-  res.end(Buffer.from(output, 'utf8'));
+  res.setHeader('content-length', String(body.byteLength));
+  res.end(body);
 }
 
 export function errorPage(url, reason) {
