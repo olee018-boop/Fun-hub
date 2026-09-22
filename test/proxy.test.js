@@ -299,3 +299,49 @@ test('refuses to relay a WebSocket to a bad path', async () => {
   const socket = new WebSocket(`${wsBase}/not-a-relay`);
   await assert.rejects(() => wsOnce(socket, 'open'));
 });
+
+
+/* ------------------------------------------- streaming (chat-app shaped) */
+
+/** Read a stream, recording when each chunk actually arrived. */
+async function readStreamTimings(res) {
+  const reader = res.body.getReader();
+  const started = Date.now();
+  const chunks = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push({ at: Date.now() - started, text: Buffer.from(value).toString() });
+  }
+  return chunks;
+}
+
+test('server-sent events arrive incrementally, not buffered to the end', async () => {
+  const res = await makeClient()(`/p/${origin}/sse`);
+  assert.match(res.headers.get('content-type'), /text\/event-stream/);
+
+  const chunks = await readStreamTimings(res);
+  const body = chunks.map((c) => c.text).join('');
+  assert.match(body, /chunk1/);
+  assert.match(body, /\[DONE\]/);
+
+  // The fixture emits every 250ms. If the proxy buffered, every chunk would
+  // land at once at the end and a chat reply would appear in one lump.
+  assert.ok(chunks.length > 1, `expected progressive delivery, got ${chunks.length} chunk(s)`);
+  assert.ok(
+    chunks[0].at < 600,
+    `first token took ${chunks[0].at}ms; it should arrive as soon as the origin sends it`
+  );
+});
+
+test('a POST that returns a stream works (the chat-completion shape)', async () => {
+  const res = await makeClient()(`/p/${origin}/sse`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ message: 'hi' }),
+  });
+  assert.equal(res.status, 200);
+  const chunks = await readStreamTimings(res);
+  assert.ok(chunks.length > 1, 'the response must stream, not arrive in one piece');
+  assert.match(chunks.map((c) => c.text).join(''), /\[DONE\]/);
+});

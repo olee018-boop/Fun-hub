@@ -73,11 +73,50 @@ export function startOrigin() {
 
     // A single-page app doing the thing that breaks naive proxies: building a
     // URL against location.href and fetching it.
+    // Server-sent events, the way a chat app streams a reply token by token.
+    if (url.pathname === '/sse') {
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache',
+        connection: 'keep-alive',
+      });
+      let n = 0;
+      const timer = setInterval(() => {
+        n += 1;
+        res.write(`data: chunk${n}\n\n`);
+        if (n === 4) {
+          clearInterval(timer);
+          res.write('data: [DONE]\n\n');
+          res.end();
+        }
+      }, 250);
+      req.on('close', () => clearInterval(timer));
+      return;
+    }
+
     if (url.pathname === '/slow') {
       setTimeout(() => {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         res.end('<html><head><title>Slow</title></head><body>done</body></html>');
       }, 1500);
+      return;
+    }
+
+    if (url.pathname === '/ssedemo') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html><html><head><title>SSE</title></head><body>
+<div id="out"></div>
+<script>
+  window.__sse = { events: [] };
+  var es = new EventSource('/sse');
+  es.onmessage = function (e) {
+    window.__sse.events.push(e.data);
+    document.getElementById('out').textContent = window.__sse.events.join(',');
+    if (e.data === '[DONE]') es.close();
+  };
+  es.onerror = function () { window.__sse.error = true; };
+</script>
+</body></html>`);
       return;
     }
 

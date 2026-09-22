@@ -43,6 +43,7 @@ suite.
 | **Session restore** | Your tabs come back when you reload the app |
 | **Cookies** | Kept per session on the server, so sites keep you logged in |
 | **WebSockets** | Relayed through the server, so live features work |
+| **Streaming** | SSE and streamed responses pass through incrementally |
 | **Loading UI** | Spinner, progress bar and a spinning tab favicon while a page loads |
 
 ### Keyboard shortcuts
@@ -107,11 +108,20 @@ large part of the web and badly for a specific, predictable slice of it.
 **Works well** — documentation, wikis, news, blogs, forums, search engines,
 most static and server-rendered sites, and simple interactive apps.
 
-**Usually works** — single-page apps. Navigation, `fetch`/XHR, WebSockets and
-dynamically built DOM are all handled. Expect occasional rough edges.
+**Usually works** — single-page apps. Navigation, `fetch`/XHR, WebSockets,
+server-sent events and dynamically built DOM are all handled. Streaming is
+genuinely incremental: a chat app's reply arrives token by token, not in one
+lump at the end. Expect occasional rough edges.
 
-**Often fails** — sites with aggressive bot detection, anything requiring a
-login flow with strict origin checks, and Google properties.
+**Often fails** — sites behind bot protection. **ChatGPT is the typical case.**
+The transport it needs is all supported here (POST returning a stream, SSE,
+WebSockets), but `chatgpt.com` sits behind Cloudflare bot management, which
+fingerprints the TLS handshake and scores datacenter IPs harshly. Requests from
+this proxy come from Node, whose TLS fingerprint looks nothing like Chrome's,
+from a cloud IP — so you will most likely get a "Verify you are human" challenge
+that cannot be completed. Defeating that is not something this project tries to
+do. The same applies to most sites fronted by Cloudflare's stricter modes, and
+to Google properties.
 
 **Won't work** — large streaming services. **YouTube is the clearest example,
 and it is not a bug we can fix:**
@@ -192,8 +202,8 @@ test/          unit and end-to-end tests
 npm test
 ```
 
-42 tests: URL resolution, HTML/CSS rewriting, the cookie jar, the private
+44 tests: URL resolution, HTML/CSS rewriting, the cookie jar, the private
 address guard, and end-to-end runs of the real server against a fixture origin
 (rewriting, redirects, cookie replay, POST bodies, charset transcoding, gzip,
-range requests, `content-length` handling, WebSocket relaying, header stripping
-and the referer fallback).
+range requests, `content-length` handling, WebSocket relaying, SSE streaming,
+header stripping and the referer fallback).
